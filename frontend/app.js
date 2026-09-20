@@ -20,6 +20,7 @@ const TABS = [
   { id: 'crm', name: '询盘 / CRM', sub: 'A13 GEO → 询盘 → RFQ → 成交' },
   { id: 'approval', name: '人工审核', sub: 'Human-in-the-loop Approval Queue' },
   { id: 'audit', name: '审计日志', sub: '全链路可追溯审计' },
+  { id: 'plugins', name: '插件', sub: '外部连接器 · RedditGrow（MCP）' },
   { id: 'arch', name: '系统架构', sub: 'OpenClaw Orchestrator + Agent Cluster' },
 ];
 
@@ -91,7 +92,7 @@ function renderHealth() {
   $('#healthBox').innerHTML = `状态 <b>OK</b> · 实体 ${h.counts.entities} · Claim ${h.counts.claims} · 信源 ${h.counts.sources}`;
   const c = h.connectors;
   $('#engineBadge').textContent =
-    `Connectors: 检索 ${c.web_search ? 'ON' : 'OFF'} · AI探针 ${c.ai_engine_probe ? 'ON' : 'OFF'} · LLM ${c.llm_polish ? 'ON' : 'OFF'}`;
+    `Connectors: 检索 ${c.web_search ? 'ON' : 'OFF'} · AI探针 ${c.ai_engine_probe ? 'ON' : 'OFF'} · LLM ${c.llm_polish ? 'ON' : 'OFF'} · RedditGrow ${c.redditgrow ? 'ON' : 'OFF'}`;
 }
 
 function buildNav() {
@@ -124,6 +125,7 @@ async function renderTab(id) {
     if (id === 'crm') await renderCrm();
     if (id === 'approval') await renderApproval();
     if (id === 'audit') await renderAudit();
+    if (id === 'plugins') await renderPlugins();
     if (id === 'arch') renderArch();
   } catch (e) {
     $(`#view-${id}`).innerHTML = `<div class="card"><div class="empty">加载失败：${esc(e.message)}</div></div>`;
@@ -655,6 +657,107 @@ async function renderAudit() {
         <td>${esc(a.actor)}</td><td class="muted">${esc(a.run_id || '')}</td>
         <td><span class="chip ${a.risk_level === 'high' ? 'bad' : a.risk_level === 'medium' ? 'warn' : 'info'}">${esc(a.risk_level)}</span></td></tr>`).join('')}
       </tbody></table></div>`;
+}
+
+/* ---------------- plugins ---------------- */
+async function renderPlugins() {
+  const st = await api('/api/plugins/redditgrow/status');
+  $('#view-plugins').innerHTML = `
+    <div class="grid c3">
+      <div class="kpi ${st.enabled ? 'accent' : ''}"><div class="label">RedditGrow</div>
+        <div class="value">${st.enabled ? 'ON' : 'OFF'}</div><div class="sub">${esc(st.mode)}</div></div>
+      <div class="kpi blue"><div class="label">传输</div><div class="value" style="font-size:14px">${esc(st.transport)}</div>
+        <div class="sub">${esc(st.mcp_url)}</div></div>
+      <div class="kpi"><div class="label">Webhook</div><div class="value">${st.webhook_enabled ? 'ON' : 'OFF'}</div>
+        <div class="sub">HMAC-SHA256</div></div>
+    </div>
+    ${st.note ? `<div class="notice">${esc(st.note)}</div>` : ''}
+    <div class="card"><div class="card-head"><h3>接入配置</h3>
+      <span class="hint">在 redditgrow.ai → Settings → Integrations 生成 rg_live_ 开头的 API Key（Growth / Agency 套餐）</span></div>
+      <div class="form-grid">
+        <label class="field span2"><span>API Key</span><input id="rgKey" placeholder="rg_live_..." value="" /></label>
+        <label class="field"><span>MCP URL</span><input id="rgUrl" value="${esc(st.mcp_url)}" /></label>
+        <label class="field"><span>Webhook Secret</span><input id="rgSecret" placeholder="订阅 webhook 时返回的 secret" /></label>
+      </div>
+      <div class="muted">当前已保存 Key：${esc(st.api_key_masked || '（未配置）')} · 配置写入 Shared Context settings</div>
+      <div class="actions">
+        <button class="btn primary" id="btnRgSave">保存配置</button>
+        <button class="btn ghost" id="btnRgStatus">重新检测</button>
+      </div></div>
+    <div class="card"><div class="card-head"><h3>拉取 Reddit 机会并导入询盘</h3>
+      <span class="hint">lead_source=RedditGrow · verification_status=unverified</span></div>
+      <div class="form-grid">
+        <label class="field"><span>最低机会分</span><input id="rgMin" type="number" step="0.1" value="7.0" /></label>
+        <label class="field"><span>条数</span><input id="rgLimit" type="number" value="10" /></label>
+        <label class="field"><span>项目 ID（可选）</span><input id="rgProject" /></label>
+        <label class="field"><span>绑定实体 ID（可选）</span><input id="rgEntity" placeholder="ENT-VXF-001" /></label>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="btnRgFetch">仅查询</button>
+        <button class="btn primary" id="btnRgSync">同步为询盘</button>
+        <button class="btn ghost" id="btnRgVis">AI 可见性</button>
+        <button class="btn ghost" id="btnRgMentions">品牌提及</button>
+      </div>
+      <div id="rgOut" class="list"></div></div>
+    <div class="card"><div class="card-head"><h3>可用能力（MCP tools）</h3></div>
+      <div>${(st.tools || []).map((t) => `<span class="chip info">${esc(t)}</span>`).join('')}</div>
+      <div class="muted">${esc(st.plan_note || '')}</div>
+      <div class="muted">Webhook 接收地址：<code>/api/plugins/redditgrow/webhook</code>（签名头 X-RedditGrow-Signature）</div></div>`;
+
+  $('#btnRgSave').addEventListener('click', async () => {
+    await api('/api/plugins/redditgrow/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: $('#rgKey').value || undefined,
+        mcp_url: $('#rgUrl').value || undefined,
+        webhook_secret: $('#rgSecret').value || undefined,
+      }),
+    });
+    toast('配置已保存');
+    await renderPlugins();
+  });
+  $('#btnRgStatus').addEventListener('click', async () => { await renderPlugins(); });
+
+  const rgBody = () => JSON.stringify({
+    min_score: Number($('#rgMin').value || 7),
+    limit: Number($('#rgLimit').value || 10),
+    project_id: $('#rgProject').value || undefined,
+    entity_id: $('#rgEntity').value || undefined,
+  });
+  const post = (path, body) => api(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+  });
+
+  $('#btnRgFetch').addEventListener('click', async () => {
+    const r = await post('/api/plugins/redditgrow/opportunities', rgBody());
+    renderRgOut(r);
+  });
+  $('#btnRgSync').addEventListener('click', async () => {
+    const r = await post('/api/plugins/redditgrow/sync', rgBody());
+    renderRgOut(r);
+    toast(`已导入 ${r.imported || 0} 条`);
+  });
+  $('#btnRgVis').addEventListener('click', async () => {
+    renderRgOut(await post('/api/plugins/redditgrow/ai-visibility',
+      JSON.stringify({ project_id: $('#rgProject').value || undefined })));
+  });
+  $('#btnRgMentions').addEventListener('click', async () => {
+    renderRgOut(await post('/api/plugins/redditgrow/mentions', '{}'));
+  });
+}
+
+function renderRgOut(r) {
+  const items = r.opportunities || r.leads || [];
+  $('#rgOut').innerHTML = `
+    <div class="list-item"><div class="t">mode: ${esc(r.mode || r.result?.mode || 'n/a')}</div>
+      <div class="m">${esc(r.note || r.error || r.result?.note || '')}</div></div>
+    ${items.length ? items.map((o) => `<div class="list-item">
+      <div class="t">${esc(o.query || o.title || o.id)}</div>
+      <div class="m">${esc(o.metadata?.subreddit || o.subreddit || '')} ·
+        score ${o.metadata?.opportunity_score ?? o.score ?? '-'} · ${esc(o.buyer_stage || '')}
+        ${o.qualification_score != null ? `· 资质 ${o.qualification_score}` : ''}</div></div>`).join('')
+      : `<div class="muted">无数据${r.mode === 'disabled' ? '（插件未启用）' : ''}</div>`}
+    ${r.result?.error ? `<pre>${esc(String(r.result.error))}</pre>` : ''}`;
 }
 
 /* ---------------- architecture ---------------- */

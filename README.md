@@ -21,17 +21,53 @@ pip3 install -r requirements.txt
 
 ```bash
 ./packaging/build_dmg.sh
-# 产物：dist/GlobalEagleGEO-1.0.0.dmg（约 3.4 MB）
+# 产物：dist/GlobalEagleGEO-1.1.0.dmg（约 3.9 MB）
 ```
 
 DMG 内容：`GlobalEagleGEO.app` + `使用说明.txt` + `停止服务.command` + `Applications` 快捷方式。
+
+App 为**原生 macOS 窗口应用**（`packaging/macos/native/GlobalEagleGEO.swift`，Swift + WKWebView 编译）：
+独立 Dock 图标与菜单栏，界面在原生窗口内加载，外部链接自动跳转默认浏览器，
+关闭窗口即停止本地服务。若打包机无 Swift 工具链，脚本自动退化为浏览器版启动器。
 
 - App 内已内置完整源码与**离线 wheel**（fastapi/uvicorn/pydantic 等），首次运行免联网；
   若 wheel 与目标机型 Python 版本不匹配，自动退化为联网安装。
 - 依赖环境创建在 `~/Library/Application Support/GlobalEagleGEO/venv`，
   数据写在 `.../GlobalEagleGEO/data`，升级 App 不丢数据。
-- 服务地址固定 `127.0.0.1:8787`（可用环境变量 `GEO_PORT` 覆盖），双击 App 即自动打开浏览器。
+- 服务地址固定 `127.0.0.1:8787`（可用环境变量 `GEO_PORT` 覆盖），由 App 进程拉起并托管生命周期。
 - 未做开发者签名，首次打开需「右键 → 打开」或在 隐私与安全性 中允许。
+
+## 插件：RedditGrow（MCP over HTTP）
+
+把 [RedditGrow](https://redditgrow.ai) 的 Reddit 获客能力接进 GEO 闭环：机会发现 → 询盘管道 → AI 可见性验证。
+Reddit 线程既是买家真实提问，也是 ChatGPT / Perplexity / Google 长期引用的信源，与 GEO 的 Evidence First 一致。
+
+接入方式（`redditgrow.ai → Settings → Integrations` 生成 `rg_live_` 开头 API Key，Growth / Agency 套餐）：
+
+```bash
+export REDDITGROW_API_KEY=rg_live_xxx            # 或控制台「插件」页保存（写入 Shared Context settings）
+export REDDITGROW_WEBHOOK_SECRET=xxx             # 可选，webhook 验签
+```
+
+API：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/plugins` | 插件列表与状态 |
+| GET | `/api/plugins/redditgrow/status` | 连通配置、工具清单 |
+| POST | `/api/plugins/redditgrow/config` | 保存配置（持久化到 settings） |
+| POST | `/api/plugins/redditgrow/opportunities` | 查询 Reddit 机会（不入库） |
+| POST | `/api/plugins/redditgrow/sync` | 机会 → 询盘（`lead_source=RedditGrow`） |
+| POST | `/api/plugins/redditgrow/ai-visibility` | 品牌 AI 可见性评分 |
+| POST | `/api/plugins/redditgrow/mentions` | 品牌 / 竞品 Reddit 提及 |
+| POST | `/api/plugins/redditgrow/serp` | Reddit 线程 Google SERP 排名 |
+| POST | `/api/plugins/redditgrow/reply-draft` | 生成回复草稿（**仅草稿，需人工审核**） |
+| POST | `/api/plugins/redditgrow/webhook` | 接收 `opportunity.created`，HMAC-SHA256 验签（头 `X-RedditGrow-Signature`） |
+
+原则：
+- 未配置 API Key 时插件返回 `mode='disabled'`，**不产出任何编造数据**；
+- 导入的线索一律 `verification_status=unverified`，需人工核验；
+- 回复生成只落草稿，遵守 Human-in-the-loop；频率限制 Growth 100 次/小时、Agency 500 次/小时。
 
 ## 系统边界与原则（Important）
 

@@ -1,11 +1,12 @@
 """全球鹰 GEO 全球AI推荐系统 - OpenClaw Orchestrator 服务入口."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +19,7 @@ from .core import audit, evidence_graph
 from .core.store import Store
 from .core.util import now_iso, uid
 from .orchestrator import Orchestrator, PIPELINE
+from .plugins import redditgrow
 from .seed import seed
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -139,6 +141,7 @@ def health() -> dict[str, Any]:
                                     or os.getenv("PERPLEXITY_API_KEY")
                                     or os.getenv("ANTHROPIC_API_KEY")),
             "llm_polish": bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")),
+            "redditgrow": _redditgrow_status().get("enabled", False),
         },
         "demo_notice": store.data.get("settings", {}).get("demo_notice"),
     }
@@ -377,6 +380,146 @@ def feedback_loop():
 def audit_log(limit: int = 200, run_id: str | None = None):
     items = audit.for_run(store, run_id) if run_id else audit.tail(store, limit)
     return {"audit": items, "summary": audit.summary(store)}
+
+
+# ---------------- plugins: RedditGrow ----------------
+PLUGIN_KEY = "redditgrow"
+
+
+def _plugin_settings() -> dict:
+    return store.data.get("settings", {}).get(PLUGIN_KEY, {})
+
+
+def _redditgrow_status() -> dict:
+    return redditgrow.status(_plugin_settings())
+
+
+class RedditGrowConfigIn(BaseModel):
+    api_key: str | None = None
+    mcp_url: str | None = None
+    webhook_secret: str | None = None
+
+
+class RedditGrowSyncIn(BaseModel):
+    min_score: float = 7.0
+    limit: int = 10
+    project_id: str | None = None
+    entity_id: str | None = None
+
+
+class RedditGrowToolIn(BaseModel):
+    keyword: str | None = None
+    project_id: str | None = None
+    mention_type: str | None = None
+    opportunity_id: str | None = None
+    tone: str = "professional"
+    length: str = "medium"
+
+
+@app.get("/api/plugins")
+def list_plugins():
+    return {"plugins": [_redditgrow_status()]}
+
+
+@app.get("/api/plugins/redditgrow/status")
+def redditgrow_status():
+    return _redditgrow_status()
+
+
+@app.post("/api/plugins/redditgrow/config")
+def redditgrow_config(body: RedditGrowConfigIn):
+    patch = {k: v for k, v in body.model_dump().items() if v}
+    settings = dict(_plugin_settings())
+    settings.update(patch)
+    store.set_dict("settings", {PLUGIN_KEY: settings})
+    redditgrow.reset_session()
+    audit.log(store, "plugin.redditgrow.config", "api",
+              {"updated_fields": sorted(patch.keys())}, "medium")
+    return _redditgrow_status()
+
+
+@app.post("/api/plugins/redditgrow/opportunities")
+def redditgrow_opportunities(body: RedditGrowSyncIn):
+    result = redditgrow.find_opportunities(min_score=body.min_score, limit=body.limit,
+                                           project_id=body.project_id, settings=_plugin_settings())
+    return {"result": result, "opportunities": redditgrow.extract_opportunities(result)}
+
+
+@app.post("/api/plugins/redditgrow/sync")
+def redditgrow_sync(body: RedditGrowSyncIn):
+    """拉取 RedditGrow 机会并以 lead_source='RedditGrow' 写入询盘管道。"""
+    result = redditgrow.find_opportunities(min_score=body.min_score, limit=body.limit,
+                                           project_id=body.project_id, settings=_plugin_settings())
+    if result.get("mode") != "live":
+        return {"mode": result.get("mode"), "note": result.get("note") or result.get("error"),
+                "imported": 0, "leads": []}
+    opportunities = redditgrow.extract_opportunities(result)
+    created = []
+    for op in opportunities:
+        payload = redditgrow.normalize_opportunity(op)
+        payload["entity_id"] = body.entity_id
+        if not payload.get("query"):
+            continue
+        created.append(a13_lead.create_lead(store, payload))
+    audit.log(store, "plugin.redditgrow.sync", "api",
+              {"fetched": len(opportunities), "imported": len(created),
+               "min_score": body.min_score}, "medium")
+    return {"mode": "live", "fetched": len(opportunities), "imported": len(created),
+            "leads": created,
+            "note": "导入线索默认 verification_status=unverified，需人工核验后方可作为结论。"}
+
+
+@app.post("/api/plugins/redditgrow/ai-visibility")
+def redditgrow_ai_visibility(body: RedditGrowToolIn):
+    return redditgrow.check_ai_visibility(body.project_id, _plugin_settings())
+
+
+@app.post("/api/plugins/redditgrow/mentions")
+def redditgrow_mentions(body: RedditGrowToolIn):
+    return redditgrow.list_brand_mentions(body.mention_type, settings=_plugin_settings())
+
+
+@app.post("/api/plugins/redditgrow/serp")
+def redditgrow_serp(body: RedditGrowToolIn):
+    if not body.keyword:
+        raise HTTPException(status_code=400, detail="keyword 必填")
+    return redditgrow.check_serp(body.keyword, _plugin_settings())
+
+
+@app.post("/api/plugins/redditgrow/reply-draft")
+def redditgrow_reply_draft(body: RedditGrowToolIn):
+    """生成 Reddit 回复草稿：只落草稿，发布必须人工审核。"""
+    if not body.opportunity_id:
+        raise HTTPException(status_code=400, detail="opportunity_id 必填")
+    result = redditgrow.generate_reply_draft(body.opportunity_id, body.tone, body.length,
+                                             _plugin_settings())
+    audit.log(store, "plugin.redditgrow.reply_draft", "api",
+              {"opportunity_id": body.opportunity_id, "mode": result.get("mode")}, "low")
+    return result
+
+
+@app.post("/api/plugins/redditgrow/webhook")
+async def redditgrow_webhook(request: Request):
+    """接收 RedditGrow Webhook（HMAC-SHA256 签名头 X-RedditGrow-Signature）。"""
+    raw = await request.body()
+    signature = request.headers.get("X-RedditGrow-Signature")
+    secret = redditgrow.config(_plugin_settings()).get("webhook_secret", "")
+    if not redditgrow.verify_webhook(raw, signature, secret):
+        audit.log(store, "plugin.redditgrow.webhook.rejected", "redditgrow",
+                  {"reason": "signature_invalid"}, "high")
+        raise HTTPException(status_code=401, detail="webhook signature invalid")
+    try:
+        event = json.loads(raw.decode("utf-8", "ignore"))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid json") from None
+    payload = redditgrow.ingest_webhook_event(event)
+    lead = None
+    if payload and payload.get("query"):
+        lead = a13_lead.create_lead(store, payload)
+    audit.log(store, "plugin.redditgrow.webhook", "redditgrow",
+              {"event": event.get("event") or event.get("type"),
+               "lead_id": lead["id"] if lead else None}, "low")
+    return {"received": True, "lead": lead}
 
 
 # ---------------- frontend ----------------

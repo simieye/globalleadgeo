@@ -10,10 +10,12 @@
     <string>com.simieye.globaleaglegeo</string>
     <key>CFBundleExecutable</key>
     <string>GlobalEagleGEO</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>1.1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -22,9 +24,16 @@
     <string>6.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.business</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

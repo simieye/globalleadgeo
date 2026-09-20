@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>全球鹰 GEO 全球AI推荐系统 · Global Eagle GEO Intelligence</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">GE</div>
+      <div class="brand-text">
+        <h1>全球鹰 GEO</h1>
+        <p>Global Eagle AI Recommendation</p>
+      </div>
+    </div>
+    <nav id="nav" class="nav"></nav>
+    <div class="sidebar-footer">
+      <div class="health" id="healthBox">连接中…</div>
+      <div class="version">OpenClaw Agent Cluster · v1.0.0</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="pageTitle">控制台</h2>
+        <p id="pageSub">输入买家真实采购问题，运行 GEO 全链路</p>
+      </div>
+      <div class="topbar-right">
+        <span class="badge" id="engineBadge">Connectors: 检测中</span>
+        <button class="btn ghost" id="btnSeed">重置演示数据</button>
+      </div>
+    </header>
+
+    <div class="notice" id="demoNotice" hidden></div>
+
+    <section class="view" id="view-console">
+      <div class="card">
+        <div class="card-head"><h3>运行 GEO 流水线</h3><span class="hint">19 步自动化闭环 · A01–A15 智能体协同</span></div>
+        <div class="form-grid">
+          <label class="field span2">
+            <span>买家 Query（自然语言）</span>
+            <textarea id="qQuery" rows="2">best AI server GPU supplier in Hong Kong with CE FCC certification for data center</textarea>
+          </label>
+          <label class="field"><span>目标市场</span><select id="qMarket"></select></label>
+          <label class="field"><span>主语言</span>
+            <select id="qLanguage">
+              <option value="en">English</option><option value="zh">中文</option>
+              <option value="de">Deutsch</option><option value="ja">日本語</option>
+              <option value="ko">한국어</option><option value="ar">العربية</option>
+              <option value="es">Español</option><option value="pt">Português</option>
+              <option value="fr">Français</option>
+            </select>
+          </label>
+          <label class="field"><span>监测引擎</span>
+            <select id="qEngines" multiple size="4">
+              <option selected>ChatGPT</option><option selected>Gemini</option>
+              <option selected>Perplexity</option><option selected>Google AI Overviews</option>
+              <option selected>Microsoft Copilot</option><option selected>Claude</option>
+            </select>
+          </label>
+          <label class="field"><span>运行选项</span>
+            <div class="checks">
+              <label><input type="checkbox" id="qWebVerify" /> 联网核验信源（真实 HTTP 请求）</label>
+            </div>
+          </label>
+        </div>
+        <div class="actions"><button class="btn primary" id="btnRun">运行流水线</button></div>
+      </div>
+
+      <div id="runResult"></div>
+    </section>
+
+    <section class="view" id="view-queries" hidden></section>
+    <section class="view" id="view-entity" hidden></section>
+    <section class="view" id="view-evidence" hidden></section>
+    <section class="view" id="view-score" hidden></section>
+    <section class="view" id="view-content" hidden></section>
+    <section class="view" id="view-competitor" hidden></section>
+    <section class="view" id="view-visibility" hidden></section>
+    <section class="view" id="view-crm" hidden></section>
+    <section class="view" id="view-approval" hidden></section>
+    <section class="view" id="view-audit" hidden></section>
+    <section class="view" id="view-arch" hidden></section>
+  </main>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

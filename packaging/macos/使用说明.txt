@@ -1,0 +1,48 @@
+全球鹰 GEO 全球AI推荐系统 · macOS 本地版
+Global Eagle GEO Recommendation & AI Visibility System · v1.0.0
+
+──────────────────────────────
+一、安装
+──────────────────────────────
+1. 双击打开本 DMG。
+2. 将「GlobalEagleGEO.app」拖入右侧的 Applications（应用程序）文件夹。
+3. 首次打开时若系统提示「无法验证开发者」：
+   在 Finder 中「右键 → 打开」，或在 系统设置 → 隐私与安全性 中点击「仍要打开」。
+
+──────────────────────────────
+二、运行
+──────────────────────────────
+双击 GlobalEagleGEO.app：
+  · 首次运行会自动创建独立 Python 虚拟环境并安装依赖（离线 wheel 已内置，无需联网）；
+  · 后台启动本地服务 http://127.0.0.1:8787；
+  · 自动打开默认浏览器进入控制台。
+
+再次双击：若服务已在运行，直接打开浏览器控制台。
+
+停止服务：双击本 DMG 中的「停止服务.command」（或终端执行 pkill -f "uvicorn backend.main:app"）。
+
+──────────────────────────────
+三、数据存储位置
+──────────────────────────────
+数据目录：~/Library/Application Support/GlobalEagleGEO/data
+运行日志：~/Library/Application Support/GlobalEagleGEO/server.log
+（数据不写入应用包内，更新 App 不会丢失数据）
+
+──────────────────────────────
+四、重要声明
+──────────────────────────────
+本系统不承诺任何品牌一定被 ChatGPT / Gemini / Perplexity 等 AI 平台推荐。
+GEO Score 仅表示「当前证据、实体、内容结构、市场相关性与查询匹配条件下的 AI 可见性优化程度」。
+
+Evidence First：禁止编造认证、客户、销售数据、市场份额、产能、交付能力与第三方背书；
+无法验证的信息一律 status = unverified，不进入 JSON-LD Schema，也不作为核心推荐依据。
+
+内置演示数据中的企业、品牌、案例与 .example.com 信源均为示例数据（is_demo=True），
+未经真实核验，请接入真实企业数据后重新运行。
+
+──────────────────────────────
+五、命令行启动（可选）
+──────────────────────────────
+cd /Applications/GlobalEagleGEO.app/Contents/Resources/app
+export GEO_DATA_DIR="$HOME/Library/Application Support/GlobalEagleGEO/data"
+python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8787

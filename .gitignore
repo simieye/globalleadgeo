@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 运行时数据（Shared Context 持久化目录，不入库）
+backend/data/
+
+# 构建产物
+dist/
+*.dmg
+packaging/macos/wheels/
+
+# 环境
+.venv/
+venv/
+.env
+
+# macOS
+.DS_Store
+.AppleDouble

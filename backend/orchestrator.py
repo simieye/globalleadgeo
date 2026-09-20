@@ -27,7 +27,7 @@ PIPELINE = [
 class Orchestrator:
     def __init__(self, store: Store):
         self.store = store
-        self.llm = LLMAdapter()
+        self.llm = LLMAdapter.from_store(store)
 
     def run(self, payload: dict) -> dict:
         started = time.time()
@@ -72,9 +72,11 @@ class Orchestrator:
         step("09_competitor_gap", lambda: a08_competitor.run(self.store, ctx))
         step("11_localization", lambda: a11_localization.run(self.store, ctx))
         step("10_content_optimization", lambda: a09_answer_opt.run(self.store, ctx))
-        if self.llm.available:
+        # 每次运行重新读取设置，保证界面上新增/切换提供商后立即生效
+        self.llm = llm = LLMAdapter.from_store(self.store)
+        if llm.available:
             ctx["ai_answer_ready_content"] = [
-                a09_answer_opt.polish(self.llm, c, c["language"]) or c
+                a09_answer_opt.polish(llm, c, c["language"]) or c
                 for c in ctx.get("ai_answer_ready_content", [])
             ]
         step("11_schema_generation", lambda: a10_schema.run(self.store, ctx))

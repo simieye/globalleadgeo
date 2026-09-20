@@ -69,6 +69,39 @@ API：
 - 导入的线索一律 `verification_status=unverified`，需人工核验；
 - 回复生成只落草稿，遵守 Human-in-the-loop；频率限制 Growth 100 次/小时、Agency 500 次/小时。
 
+## 系统设置（控制台「系统设置」页）
+
+两类接入：**自定义大模型提供商**、**本地 CLI 连接器**。全部为可选增强，未配置时系统仍以
+规则化 + 证据驱动的确定性逻辑完整运行。
+
+### 自定义大模型提供商
+
+- 内置 OpenAI / Anthropic，可任意新增 **OpenAI 兼容**网关（DeepSeek、通义、智谱、Moonshot、
+  本地 vLLM / Ollama / 自建网关等）：填写 `base_url`、`model`、`api_key`。
+- 也可只填 `env_var`（如 `DEEPSEEK_API_KEY`），Key 从环境变量读取，不落盘。
+- 界面可「测试连接」（先 `GET /models`，网关不支持时回退最小 `chat/completions` 调用）、
+  「设为默认」「启用/停用」「删除」；多个已启用提供商按默认优先顺序回退。
+- Key 只写入本机 Shared Context（`settings.json`），接口只返回掩码，不回显明文。
+- 生效范围：A09 AI Answer 内容润色（仍受证据约束，不生成未证实结论）。
+
+### 本地 CLI 接入：OpenClaw / AnyGen / WorkBuddy
+
+- 三个连接器均为**本机进程调用**，`shell=False`、参数经 `shlex` 解析、超时 1–120s、输出截断 8000 字符。
+- 配置项：命令（可填绝对路径）、探测参数（默认 `--version`）、工作目录、超时、启用开关。
+- 界面可「测试连接」（执行探测参数）与「执行」（自定义参数），输出原样展示。
+- CLI 产出统一标记 `verification_status=unverified`，**需人工审核后才可对外使用**。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/settings` | 设置总览（提供商 + 本地 CLI，Key 掩码） |
+| POST | `/api/settings/llm/providers` | 新增 / 更新提供商 |
+| DELETE | `/api/settings/llm/providers/{id}` | 删除自定义提供商（内置不可删） |
+| POST | `/api/settings/llm/default` | 设为默认提供商 |
+| POST | `/api/settings/llm/test` | 连通性测试（可测未保存配置） |
+| POST | `/api/settings/local/{openclaw\|anygen\|workbuddy}` | 保存本地 CLI 配置 |
+| POST | `/api/settings/local/{id}/probe` | 探测本地 CLI 是否可用 |
+| POST | `/api/settings/local/{id}/run` | 执行本地 CLI（仅草稿产出） |
+
 ## 系统边界与原则（Important）
 
 - **不承诺推荐结果**：系统不承诺任何品牌一定被 ChatGPT / Gemini / Perplexity 等平台推荐。
@@ -121,7 +154,7 @@ backend/
   seed.py              演示产业数据（AI GPU 服务器产业带）
   agents/              A01 ~ A15 智能体
   core/                store / evidence_graph / entity_graph / vector_index /
-                       approval / audit / web_research / llm
+                       approval / audit / web_research / llm / settings / net
   data/                运行时 JSON 持久化（Shared Context）
 frontend/              控制台（原生 HTML/CSS/JS，无外部依赖）
 ```
@@ -132,7 +165,7 @@ frontend/              控制台（原生 HTML/CSS/JS，无外部依赖）
 | --- | --- |
 | 联网检索 | `TAVILY_API_KEY` 或 `SERPER_API_KEY` |
 | AI 引擎真实探针 | `OPENAI_API_KEY` / `PERPLEXITY_API_KEY` / `ANTHROPIC_API_KEY` |
-| LLM 内容润色 | `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY` |
+| LLM 内容润色 | `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`，或「系统设置」中的自定义提供商 |
 
 未配置时：检索返回 `mode=disabled`，AI 探针返回 `mode=simulated`（明确标注为模拟基线，不计入真实指标）。
 
@@ -151,4 +184,5 @@ GET/POST /api/leads  POST /api/leads/{id}/rfq               询盘与 RFQ
 GET  /api/analytics  POST /api/feedback                     分析与反馈学习
 GET  /api/audit                      审计日志
 GET  /api/schema/{entity_id}         JSON-LD
+GET/PUT /api/settings                系统设置（大模型提供商 + 本地 CLI 接入）
 ```

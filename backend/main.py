@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from .agents import (a10_schema, a12_visibility, a13_lead, a14_analytics,
                      a15_feedback, a02_market)
 from .core import approval as approval_core
-from .core import audit, evidence_graph
+from .core import audit, evidence_graph, settings as settings_core
 from .core.store import Store
 from .core.util import now_iso, uid
 from .orchestrator import Orchestrator, PIPELINE
@@ -38,6 +38,32 @@ app = FastAPI(
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
+
+
+# ---------------- settings helpers ----------------
+def _settings() -> dict:
+    """Shared Context 中的系统设置（settings.json）。"""
+    return store.data.get("settings", {})
+
+
+def _llm_state() -> dict:
+    return settings_core.llm_state(_settings())
+
+
+def _write_llm(state: dict) -> None:
+    cur = settings_core.llm_settings(_settings())
+    cur.update(state)
+    store.set_dict("settings", {settings_core.LLM_KEY: cur})
+
+
+def _write_local(client_id: str, cfg: dict) -> None:
+    cur = settings_core.local_settings(_settings())
+    cur[client_id] = settings_core.clean_local_cfg(cfg)
+    store.set_dict("settings", {settings_core.LOCAL_KEY: cur})
+
+
+def _local_client(client_id: str) -> dict:
+    return settings_core.local_state(_settings())[client_id]
 
 
 # ---------------- request models ----------------
@@ -140,8 +166,12 @@ def health() -> dict[str, Any]:
             "ai_engine_probe": bool(os.getenv("OPENAI_API_KEY")
                                     or os.getenv("PERPLEXITY_API_KEY")
                                     or os.getenv("ANTHROPIC_API_KEY")),
-            "llm_polish": bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")),
+            "llm_polish": bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+                               or _llm_state().get("active")),
             "redditgrow": _redditgrow_status().get("enabled", False),
+            "local_cli_ready": len([c for c in settings_core.local_state(_settings()).values()
+                                    if c["ready"]]),
+            "local_cli_total": len(settings_core.LOCAL_CLIENTS),
         },
         "demo_notice": store.data.get("settings", {}).get("demo_notice"),
     }
@@ -520,6 +550,146 @@ async def redditgrow_webhook(request: Request):
               {"event": event.get("event") or event.get("type"),
                "lead_id": lead["id"] if lead else None}, "low")
     return {"received": True, "lead": lead}
+
+
+# ---------------- system settings ----------------
+class LLMProviderIn(BaseModel):
+    id: str | None = None
+    name: str | None = None
+    type: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    env_var: str | None = None
+    enabled: bool | None = None
+
+
+class LLMDefaultIn(BaseModel):
+    provider_id: str
+
+
+class LocalClientIn(BaseModel):
+    enabled: bool | None = None
+    command: str | None = None
+    probe_args: str | None = None
+    workdir: str | None = None
+    timeout: int | None = None
+    env: dict[str, str] | None = None
+
+
+class LocalRunIn(BaseModel):
+    args: str | None = None
+    timeout: int | None = None
+
+
+@app.get("/api/settings")
+def get_settings():
+    """系统设置总览：大模型提供商 + 本地 CLI 连接器（Key 只返回掩码）。"""
+    return {"llm": _llm_state(), "local": settings_core.local_state(_settings())}
+
+
+@app.post("/api/settings/llm/providers")
+def upsert_llm_provider(body: LLMProviderIn):
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not payload:
+        raise HTTPException(400, "没有可更新的字段")
+    cur = settings_core.llm_settings(_settings())
+    providers = cur["providers"]
+    if not payload.get("id") and not payload.get("name") and not payload.get("base_url"):
+        raise HTTPException(400, "新增提供商需提供 name 或 base_url")
+    if payload.get("enabled") is None and not any(
+            p.get("id") == payload.get("id") for p in providers):
+        payload["enabled"] = True  # 新增默认启用，避免「配了却没生效」
+    provider = settings_core.upsert_provider(providers, payload)
+    if not cur.get("default"):
+        cur["default"] = provider["id"]
+    _write_llm({"providers": providers, "default": cur.get("default")})
+    audit.log(store, "settings.llm.upsert", "api",
+              {"id": provider["id"], "type": provider.get("type"),
+               "fields": sorted(k for k in payload if k != "api_key")}, "medium")
+    return _llm_state()
+
+
+@app.delete("/api/settings/llm/providers/{provider_id}")
+def delete_llm_provider(provider_id: str):
+    if provider_id in settings_core.BUILTIN_IDS:
+        raise HTTPException(400, "内置提供商不可删除，可将其停用")
+    cur = settings_core.llm_settings(_settings())
+    providers = cur["providers"]
+    kept = [p for p in providers if p.get("id") != provider_id]
+    if len(kept) == len(providers):
+        raise HTTPException(404, "provider not found")
+    default = None if cur.get("default") == provider_id else cur.get("default")
+    _write_llm({"providers": kept, "default": default})
+    audit.log(store, "settings.llm.delete", "api", {"id": provider_id}, "medium")
+    return _llm_state()
+
+
+@app.post("/api/settings/llm/default")
+def set_default_provider(body: LLMDefaultIn):
+    cur = settings_core.llm_settings(_settings())
+    if body.provider_id not in settings_core.provider_ids(_settings()):
+        raise HTTPException(404, "provider not found")
+    _write_llm({"providers": cur["providers"], "default": body.provider_id})
+    audit.log(store, "settings.llm.default", "api", {"id": body.provider_id}, "low")
+    return _llm_state()
+
+
+@app.post("/api/settings/llm/test")
+def test_llm_provider(body: LLMProviderIn):
+    """连通性测试：可测试已保存配置（传 id），也可先测未保存的配置。"""
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    cfg = dict(payload)
+    if cfg.get("id"):
+        stored = settings_core.provider_by_id(cfg["id"], _settings())
+        if stored:
+            cfg = {**stored, **payload}
+    result = settings_core.test_provider(cfg)
+    audit.log(store, "settings.llm.test", "api",
+              {"id": cfg.get("id"), "ok": result.get("ok")}, "low")
+    return result
+
+
+@app.post("/api/settings/local/{client_id}")
+def save_local_client(client_id: str, body: LocalClientIn):
+    if client_id not in settings_core.LOCAL_CLIENTS:
+        raise HTTPException(404, f"未知本地 CLI：{client_id}")
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    # 以「内置默认 + 已存配置」为底，避免只提交 enabled 时把 command 覆盖为空
+    cfg = {**settings_core.client_cfg(client_id, _settings()), **patch}
+    _write_local(client_id, cfg)
+    audit.log(store, "settings.local.save", "api",
+              {"client": client_id, "fields": sorted(patch.keys())}, "medium")
+    return {"client": _local_client(client_id)}
+
+
+@app.post("/api/settings/local/{client_id}/probe")
+def probe_local_client(client_id: str):
+    """探测本地 CLI 是否可用（默认执行 `--version`）。"""
+    if client_id not in settings_core.LOCAL_CLIENTS:
+        raise HTTPException(404, f"未知本地 CLI：{client_id}")
+    result = settings_core.probe_local(client_id, _settings())
+    cfg = settings_core.client_cfg(client_id, _settings())
+    cfg["last_probe"] = settings_core.probe_summary(result)
+    _write_local(client_id, cfg)
+    audit.log(store, "settings.local.probe", "api",
+              {"client": client_id, "ok": result.get("ok")}, "low")
+    result["client_state"] = _local_client(client_id)
+    return result
+
+
+@app.post("/api/settings/local/{client_id}/run")
+def run_local_client(client_id: str, body: LocalRunIn):
+    """执行本地 CLI（shell=False）。输出仅作为草稿，verification_status=unverified。"""
+    if client_id not in settings_core.LOCAL_CLIENTS:
+        raise HTTPException(404, f"未知本地 CLI：{client_id}")
+    result = settings_core.run_local(client_id, _settings(), args=body.args,
+                                     timeout=body.timeout)
+    audit.log(store, "settings.local.run", "api",
+              {"client": client_id, "ok": result.get("ok"),
+               "exit_code": result.get("exit_code"),
+               "args": (body.args or "")[:120]}, "medium")
+    return result
 
 
 # ---------------- frontend ----------------

@@ -21,6 +21,7 @@ const TABS = [
   { id: 'approval', name: '人工审核', sub: 'Human-in-the-loop Approval Queue' },
   { id: 'audit', name: '审计日志', sub: '全链路可追溯审计' },
   { id: 'plugins', name: '插件', sub: '外部连接器 · RedditGrow（MCP）' },
+  { id: 'settings', name: '系统设置', sub: '自定义大模型提供商 · 本地 CLI 接入（OpenClaw / AnyGen / WorkBuddy）' },
   { id: 'arch', name: '系统架构', sub: 'OpenClaw Orchestrator + Agent Cluster' },
 ];
 
@@ -92,7 +93,7 @@ function renderHealth() {
   $('#healthBox').innerHTML = `状态 <b>OK</b> · 实体 ${h.counts.entities} · Claim ${h.counts.claims} · 信源 ${h.counts.sources}`;
   const c = h.connectors;
   $('#engineBadge').textContent =
-    `Connectors: 检索 ${c.web_search ? 'ON' : 'OFF'} · AI探针 ${c.ai_engine_probe ? 'ON' : 'OFF'} · LLM ${c.llm_polish ? 'ON' : 'OFF'} · RedditGrow ${c.redditgrow ? 'ON' : 'OFF'}`;
+    `Connectors: 检索 ${c.web_search ? 'ON' : 'OFF'} · AI探针 ${c.ai_engine_probe ? 'ON' : 'OFF'} · LLM ${c.llm_polish ? 'ON' : 'OFF'} · RedditGrow ${c.redditgrow ? 'ON' : 'OFF'} · 本地CLI ${c.local_cli_ready ?? 0}/${c.local_cli_total ?? 3}`;
 }
 
 function buildNav() {
@@ -126,6 +127,7 @@ async function renderTab(id) {
     if (id === 'approval') await renderApproval();
     if (id === 'audit') await renderAudit();
     if (id === 'plugins') await renderPlugins();
+    if (id === 'settings') await renderSettings();
     if (id === 'arch') renderArch();
   } catch (e) {
     $(`#view-${id}`).innerHTML = `<div class="card"><div class="empty">加载失败：${esc(e.message)}</div></div>`;
@@ -758,6 +760,215 @@ function renderRgOut(r) {
         ${o.qualification_score != null ? `· 资质 ${o.qualification_score}` : ''}</div></div>`).join('')
       : `<div class="muted">无数据${r.mode === 'disabled' ? '（插件未启用）' : ''}</div>`}
     ${r.result?.error ? `<pre>${esc(String(r.result.error))}</pre>` : ''}`;
+}
+
+/* ---------------- system settings ---------------- */
+async function renderSettings() {
+  const s = await api('/api/settings');
+  const llm = s.llm || {};
+  const providers = llm.providers || [];
+  const locals = Object.values(s.local || {});
+  const readyCli = locals.filter((c) => c.ready).length;
+
+  const row = (p) => `<tr>
+    <td><b>${esc(p.name)}</b>
+      ${p.is_default ? '<span class="chip ok">默认</span>' : ''}
+      ${p.builtin ? '<span class="chip">内置</span>' : ''}</td>
+    <td>${esc(p.type)}</td>
+    <td>${esc(p.base_url || '—')}</td>
+    <td>${esc(p.model || '—')}</td>
+    <td>${esc(p.api_key_masked || '—')} <span class="muted">${esc(p.key_source || '')}</span></td>
+    <td>${!p.enabled ? '<span class="chip">停用</span>'
+      : (p.ready ? '<span class="chip ok">可用</span>' : '<span class="chip warn">缺 Key</span>')}</td>
+    <td>
+      <button class="btn small" data-act="default" data-id="${esc(p.id)}">设为默认</button>
+      <button class="btn small ghost" data-act="toggle" data-id="${esc(p.id)}">${p.enabled ? '停用' : '启用'}</button>
+      <button class="btn small ghost" data-act="test" data-id="${esc(p.id)}">测试</button>
+      <button class="btn small ghost" data-act="edit" data-id="${esc(p.id)}">编辑</button>
+      ${p.builtin ? '' : `<button class="btn small ghost" data-act="del" data-id="${esc(p.id)}">删除</button>`}
+    </td></tr>`;
+
+  const cliCard = (c) => `<div class="card cli-card" data-cli="${esc(c.id)}">
+    <div class="card-head"><h3>${esc(c.name)} 本地接入</h3><span class="hint">${esc(c.desc)}</span></div>
+    <div class="form-grid">
+      <label class="field"><span>可执行文件 / 命令</span>
+        <input data-f="command" value="${esc(c.command)}" placeholder="${esc(c.command)}" /></label>
+      <label class="field"><span>探测参数</span><input data-f="probe_args" value="${esc(c.probe_args)}" /></label>
+      <label class="field"><span>工作目录（可选）</span>
+        <input data-f="workdir" value="${esc(c.workdir)}" placeholder="/Users/…" /></label>
+      <label class="field"><span>超时（秒）</span>
+        <input data-f="timeout" type="number" min="1" max="120" value="${Number(c.timeout) || 20}" /></label>
+    </div>
+    <div class="checks" style="margin-top:10px">
+      <label><input type="checkbox" data-f="enabled" ${c.enabled ? 'checked' : ''} /> 启用 ${esc(c.name)} 本地连接器</label>
+    </div>
+    <div class="muted">解析路径：${esc(c.resolved || '未找到可执行文件')}</div>
+    <div class="muted">${esc(c.install_hint || '')}</div>
+    <div>${(c.capabilities || []).map((x) => `<span class="chip info">${esc(x)}</span>`).join('')}
+      ${c.last_probe ? `<span class="muted">上次探测 ${esc(c.last_probe.at)} ${c.last_probe.ok ? '成功' : '失败'}</span>` : ''}</div>
+    <div class="form-grid" style="margin-top:10px">
+      <label class="field span2"><span>执行参数（可选；不启用 shell，参数按 shlex 解析）</span>
+        <input data-f="args" placeholder="run --task …" /></label>
+    </div>
+    <div class="actions">
+      <button class="btn primary" data-act="save">保存配置</button>
+      <button class="btn ghost" data-act="probe">测试连接</button>
+      <button class="btn ghost" data-act="run">执行</button>
+    </div>
+    <pre data-f="out" hidden></pre>
+  </div>`;
+
+  $('#view-settings').innerHTML = `
+    <div class="grid c3">
+      <div class="kpi ${llm.active ? 'accent' : ''}"><div class="label">默认大模型</div>
+        <div class="value" style="font-size:16px">${esc(llm.active?.name || '未启用')}</div>
+        <div class="sub">${esc(llm.active?.model || '规则化引擎 · 无 Key 也可完整运行')}</div></div>
+      <div class="kpi blue"><div class="label">已配置提供商</div><div class="value">${providers.length}</div>
+        <div class="sub">可用 ${providers.filter((p) => p.ready).length} · 启用 ${providers.filter((p) => p.enabled).length}</div></div>
+      <div class="kpi"><div class="label">本地 CLI</div><div class="value">${readyCli}/${locals.length}</div>
+        <div class="sub">OpenClaw · AnyGen · WorkBuddy</div></div>
+    </div>
+    ${llm.note ? `<div class="notice">${esc(llm.note)}</div>` : ''}
+
+    <div class="card">
+      <div class="card-head"><h3>自定义大模型提供商</h3>
+        <span class="hint">Key 只保存在本机 Shared Context，接口仅返回掩码</span></div>
+      <table><thead><tr><th>名称</th><th>类型</th><th>Base URL</th><th>模型</th><th>Key</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody>${providers.map(row).join('')}</tbody></table>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>新增 / 编辑提供商</h3>
+        <span class="hint">OpenAI 兼容网关填写完整 base_url，例：https://api.deepseek.com/v1</span></div>
+      <div class="form-grid">
+        <label class="field"><span>标识 ID（留空自动生成）</span><input id="llmId" placeholder="custom-deepseek" /></label>
+        <label class="field"><span>名称</span><input id="llmName" placeholder="DeepSeek" /></label>
+        <label class="field"><span>类型</span><select id="llmType">
+          ${(llm.types || ['openai', 'openai_compatible', 'anthropic']).map((t) =>
+            `<option value="${esc(t)}" ${t === 'openai_compatible' ? 'selected' : ''}>${esc(t)} — ${esc((llm.type_hints || {})[t] || '')}</option>`).join('')}
+        </select></label>
+        <label class="field"><span>Base URL</span><input id="llmBase" placeholder="https://api.deepseek.com/v1" /></label>
+        <label class="field"><span>模型</span><input id="llmModel" placeholder="deepseek-chat" /></label>
+        <label class="field"><span>API Key</span><input id="llmKey" type="password" placeholder="sk-…" /></label>
+        <label class="field"><span>环境变量名（Key 留空时使用）</span><input id="llmEnv" placeholder="DEEPSEEK_API_KEY" /></label>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="btnLlmSave">保存</button>
+        <button class="btn ghost" id="btnLlmTest">测试连接</button>
+        <button class="btn ghost" id="btnLlmClear">清空表单</button>
+      </div>
+      <pre id="llmOut" hidden></pre>
+    </div>
+
+    <div class="card"><div class="card-head"><h3>本地 CLI 接入</h3>
+      <span class="hint">全部在本机执行（shell=False，参数经 shlex 解析）· 产出标记 unverified，需人工审核</span></div>
+      <div class="grid c1">${locals.map(cliCard).join('')}</div></div>`;
+
+  state.llmProviders = providers;
+
+  const llmForm = () => ({
+    id: $('#llmId').value.trim() || undefined,
+    name: $('#llmName').value.trim() || undefined,
+    type: $('#llmType').value,
+    base_url: $('#llmBase').value.trim() || undefined,
+    model: $('#llmModel').value.trim() || undefined,
+    api_key: $('#llmKey').value.trim() || undefined,
+    env_var: $('#llmEnv').value.trim() || undefined,
+  });
+  const postJson = (path, obj, method = 'POST') => api(path, {
+    method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj),
+  });
+
+  $('#btnLlmSave').addEventListener('click', async () => {
+    const body = llmForm();
+    if (!body.id && !body.name) { toast('请填写名称或 ID'); return; }
+    await postJson('/api/settings/llm/providers', body);
+    toast('提供商已保存');
+    await renderSettings();
+  });
+  $('#btnLlmTest').addEventListener('click', async () => {
+    const r = await postJson('/api/settings/llm/test', llmForm());
+    const out = $('#llmOut');
+    out.hidden = false;
+    out.textContent = JSON.stringify(r, null, 2).slice(0, 4000);
+    toast(r.ok ? '连接成功' : '连接失败：' + (r.error || '未知错误'));
+  });
+  $('#btnLlmClear').addEventListener('click', async () => {
+    ['#llmId', '#llmName', '#llmBase', '#llmModel', '#llmKey', '#llmEnv']
+      .forEach((s) => { $(s).value = ''; });
+    $('#llmOut').hidden = true;
+  });
+
+  $('#view-settings').querySelectorAll('tbody [data-act]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const act = btn.dataset.act;
+      try {
+        if (act === 'edit') {
+          const p = (state.llmProviders || []).find((x) => x.id === id);
+          if (!p) return;
+          $('#llmId').value = p.id;
+          $('#llmName').value = p.name || '';
+          $('#llmType').value = p.type;
+          $('#llmBase').value = p.base_url || '';
+          $('#llmModel').value = p.model || '';
+          $('#llmEnv').value = p.env_var || '';
+          $('#llmKey').value = '';
+          toast('已载入，填写 Key 后保存');
+          return;
+        }
+        if (act === 'default') { await postJson('/api/settings/llm/default', { provider_id: id }); }
+        if (act === 'toggle') {
+          const p = (state.llmProviders || []).find((x) => x.id === id);
+          await postJson('/api/settings/llm/providers', { id, enabled: !p.enabled });
+        }
+        if (act === 'test') {
+          const r = await postJson('/api/settings/llm/test', { id });
+          const out = $('#llmOut');
+          out.hidden = false;
+          out.textContent = JSON.stringify(r, null, 2).slice(0, 4000);
+          toast(r.ok ? `${r.provider} 连接成功` : '连接失败：' + (r.error || '未知错误'));
+          return;
+        }
+        if (act === 'del') {
+          await api(`/api/settings/llm/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        }
+        await renderSettings();
+      } catch (e) { toast('操作失败：' + e.message); }
+    }));
+
+  document.querySelectorAll('.cli-card').forEach((card) => {
+    const cid = card.dataset.cli;
+    const val = (f) => {
+      const el = card.querySelector(`[data-f="${f}"]`);
+      return el.type === 'checkbox' ? el.checked : el.value;
+    };
+    card.querySelectorAll('[data-act]').forEach((btn) => btn.addEventListener('click', async () => {
+      const act = btn.dataset.act;
+      try {
+        if (act === 'save') {
+          await postJson(`/api/settings/local/${cid}`, {
+            enabled: val('enabled'), command: val('command').trim() || undefined,
+            probe_args: val('probe_args').trim() || undefined,
+            workdir: val('workdir').trim() || undefined,
+            timeout: Number(val('timeout')) || 20,
+          });
+          toast('配置已保存');
+          await renderSettings();
+          return;
+        }
+        const result = act === 'probe'
+          ? await api(`/api/settings/local/${cid}/probe`, { method: 'POST' })
+          : await postJson(`/api/settings/local/${cid}/run`, { args: val('args') });
+        if (act === 'probe') { await renderSettings(); }
+        const card2 = document.querySelector(`.cli-card[data-cli="${cid}"]`);
+        const out = card2.querySelector('[data-f="out"]');
+        out.hidden = false;
+        out.textContent = JSON.stringify(result, null, 2).slice(0, 4000);
+        toast(result.ok ? `${result.name} 执行成功` : `${result.name} 失败：${result.error || 'exit ' + result.exit_code}`);
+      } catch (e) { toast('操作失败：' + e.message); }
+    }));
+  });
 }
 
 /* ---------------- architecture ---------------- */
